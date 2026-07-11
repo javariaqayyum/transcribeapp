@@ -528,14 +528,17 @@ h1 { font-size: 28px; font-weight: 700; color: var(--text); letter-spacing: -0.5
     selectedFile = null; fileInput.value = '';
     fileRow.classList.remove('show'); submitBtn.disabled = true;
     hideToast(); hideTranscript(); progressWrap.classList.remove('show');
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   }
-  function showToast(type, title, detail) {
+  function showToast(type, title, detail, showRetry) {             
     toast.className = 'show ' + type;
     toastIcon.textContent  = type === 'success' ? '✅' : '❌';
     toastTitle.textContent  = title;
     toastDetail.textContent = detail;
+    toastRetry.className = showRetry ? 'show' : '';
+    currentJobId = showRetry ? currentJobId : null;
   }
-  function hideToast()      { toast.className = ''; }
+  function hideToast()      {  toast.className = ''; toastRetry.className = '';  }
   function hideTranscript() { transcriptBox.classList.remove('show'); segmentsList.innerHTML = ''; }
 
   fileInput.addEventListener('change', e => { if (e.target.files[0]) setFile(e.target.files[0]); });
@@ -556,6 +559,45 @@ h1 { font-size: 28px; font-weight: 700; color: var(--text); letter-spacing: -0.5
     'Almost done...'
   ];
   let stepIdx = 0, stepTimer = null;
+
+// display result from pooling response
+
+  function displayResult(data) {
+    lastText     = data.transcript || data.result?.transcript || '';
+    lastSegments = data.segments || data.result?.segments || [];
+    const words  = lastText.trim().split(/\s+/).length;
+    const lang   = (data.language || data.result?.language || 'unknown').toUpperCase();
+    const dur    = data.duration || data.result?.duration || '?';
+    const chunked= data.chunked || data.result?.chunked || false;
+
+    transcriptMeta.innerHTML = `
+      <span class="meta-tag">🌐 ${lang}</span>
+      <span class="meta-tag">📝 ${words} words</span>
+      <span class="meta-tag">⏱ ${dur}s</span>
+      <span class="meta-tag">🔖 ${lastSegments.length} segments</span>
+      <span class="meta-tag">${chunked ? '🔀 Chunked' : '⚡ Direct'}</span>
+      <span class="meta-tag">🤖 Whisper AI</span>
+    `;
+    transcriptText.textContent = lastText.trim();
+
+    segmentsList.innerHTML = '';
+    lastSegments.forEach(seg => {
+      const row = document.createElement('div');
+      row.className = 'seg-row';
+      row.innerHTML = `
+        <div class="seg-time">
+          <span class="seg-start">▶ ${formatTime(seg.start)}</span>
+          <span class="seg-end">⏹ ${formatTime(seg.end)}</span>
+        </div>
+        <div class="seg-text">${seg.text}</div>
+      `;
+      segmentsList.appendChild(row);
+    });
+
+    transcriptBox.classList.add('show');
+    showToast('success', 'Transcription complete',
+      `${words} words · ${lastSegments.length} segments · ${lang}${chunked ? ' · Long file chunked' : ''}`);
+  }
 
   submitBtn.addEventListener('click', async () => {
     if (!selectedFile) return;
