@@ -777,16 +777,15 @@ def upload():
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in SUPPORTED_FORMATS:
         return jsonify({'message': f'"{ext}" is not supported. Use WAV, MP3, M4A, OGG or FLAC.'}), 400
-    
-     #  Create persistent job folder (keeps original for retry)
+
     job_id  = str(uuid.uuid4())
     job_dir = os.path.join(UPLOAD_FOLDER, job_id)
     os.makedirs(job_dir, exist_ok=True)
 
+    # 🔴 Save original permanently (for retry), instead of temp
     original_path = os.path.join(job_dir, "original" + ext)
     file.save(original_path)
 
-    # Register job in thread-safe tracker
     with jobs_lock:
         jobs[job_id] = {
             'status':       'queued',
@@ -798,7 +797,7 @@ def upload():
             'completed_at': None
         }
 
-    # Submit to background thread pool — Flask returns immediately
+    # 🔴 Hand off to background thread so Flask can return 202 instantly
     executor.submit(process_job, job_id, original_path, ext)
 
     return jsonify({
@@ -807,73 +806,107 @@ def upload():
         'message': 'File accepted. Poll /status/<job_id> for progress.'
     }), 202
 
-    # ── CONCURRENT UPLOAD HANDLING ──
-    # Each request gets its own isolated folder (UUID) so multiple
-    # users uploading at the same time never touch each other's files
-    request_dir = os.path.join(UPLOAD_FOLDER, str(uuid.uuid4()))
-    os.makedirs(request_dir, exist_ok=True)
 
-    tmp_path = os.path.join(request_dir, "audio" + ext)
-    wav_path = os.path.join(request_dir, "converted.wav")
-    file.save(tmp_path)
+@app.route('/status/<job_id>')
+def job_status(job_id):
+    with jobs_lock:
+        job = jobs.get(job_id)
 
-    try:
-        # ── FORMAT HANDLING ──
-        # pydub + FFmpeg converts any format to 16kHz mono WAV
-        AudioSegment.converter = r"C:\ffmpeg\bin\ffmpeg.exe"
-        AudioSegment.ffprobe   = r"C:\ffmpeg\bin\ffprobe.exe"
+    if not job:
+        persist = os.path.join(JOBS_FOLDER, f"{job_id}.json")
+        if os.path.exists(persist):
+            with open(persist, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return jsonify({'job_id': job_id, 'status': data.get('status', 'unknown'), 'error': data.get('error')})
+        return jsonify({'message': 'Job not found.'}), 404
 
-        audio = AudioSegment.from_file(tmp_path)
-        audio = audio.set_frame_rate(16000).set_channels(1)
-        audio.export(wav_path, format="wav")
+    return jsonify({'job_id': job_id, 'status': job['status'], 'error': job.get('error')})
 
-        duration_ms = len(audio)
-        chunked     = duration_ms > CHUNK_THRESHOLD_MS
 
-        # ── LONG FILE HANDLING ──
-        # Files > 10 min are split into 5-min overlapping chunks
-        # Short files are transcribed directly — no unnecessary overhead
-        if chunked:
-            print(f"Long file detected ({duration_ms/60000:.1f} min) — chunking")
-            result = transcribe_in_chunks(audio, request_dir)
-            segments = result['segments']
-            language = result['language']
-            text     = result['text']
-            duration = round(duration_ms / 1000, 1)
-        else:
-            print(f"Short file ({duration_ms/60000:.1f} min) — direct transcription")
-            result   = model.transcribe(wav_path, verbose=False)
-            language = result.get('language', 'unknown')
-            text     = result['text']
-            duration = round(result['segments'][-1]['end'], 1) if result['segments'] else 0
-            segments = [
-                {
-                    'id':    i,
-                    'start': round(seg['start'], 2),
-                    'end':   round(seg['end'],   2),
-                    'text':  seg['text'].strip()
+@app.route('/result/<job_id>')
+def job_result(job_id):
+    with jobs_lock:
+        job = jobs.get(job_id)
+
+    if not job:
+        persist = os.path.join(JOBS_FOLDER, f"{job_id}.json")
+        if os.path.exists(persist):
+            with open(persist, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if data.get('status') == 'completed':
+                    return jsonify(data)
+                return jsonify({'status': data['status'], 'error': data.get('error')}), 404
+        return jsonify({'message': 'Job not found.'}), 404
+
+    if job['status'] != 'completed':
+        return jsonify({'status': job['status'], 'error': job.get('error')}), 404
+
+    return jsonify({
+        'job_id':       job_id,
+        'filename':     job['filename'],
+        'status':       'completed',
+        'created_at':   job['created_at'],
+        'completed_at': job.get('completed_at'),
+        'attempts':     job['attempts'],
+        'result':       job['result']
+    })
+
+
+@app.route('/retry/<job_id>', methods=['POST'])
+def retry_job(job_id):
+    with jobs_lock:
+        job = jobs.get(job_id)
+
+    if not job:
+        persist = os.path.join(JOBS_FOLDER, f"{job_id}.json")
+        if os.path.exists(persist):
+            with open(persist, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if data.get('status') != 'failed':
+                    return jsonify({'message': 'Only failed jobs can be retried.'}), 409
+                job = {
+                    'status': 'failed', 'filename': data.get('filename', 'unknown'),
+                    'created_at': data.get('created_at', ''), 'attempts': data.get('attempts', 0),
+                    'result': data.get('result'), 'error': data.get('error'), 'completed_at': None
                 }
-                for i, seg in enumerate(result['segments'])
-            ]
+                with jobs_lock:
+                    jobs[job_id] = job
+        else:
+            return jsonify({'message': 'Job not found.'}), 404
 
-        return jsonify({
-            'message':    'File processed.',
-            'transcript': text,
-            'language':   language,
-            'duration':   duration,
-            'segments':   segments,
-            'chunked':    chunked
-        })
+    if job['status'] not in ('failed',):
+        return jsonify({'message': 'Only failed jobs can be retried.'}), 409
 
-    except Exception as e:
-        return jsonify({'message': f'Error during transcription: {str(e)}'}), 500
+    if job['attempts'] >= RETRY_LIMIT:
+        return jsonify({'message': f'Max retries ({RETRY_LIMIT}) reached.'}), 429
 
-    finally:
-        # ── CLEANUP ──
-        # Delete entire request folder — handles all temp files in one shot
-        # Works safely even if some files failed to create
-        shutil.rmtree(request_dir, ignore_errors=True)
+    job_dir  = os.path.join(UPLOAD_FOLDER, job_id)
+    original = None
+    if os.path.isdir(job_dir):
+        for f in os.listdir(job_dir):
+            if f.startswith("original"):
+                original = os.path.join(job_dir, f)
+                break
+
+    if not original:
+        return jsonify({'message': 'Original audio no longer available for retry.'}), 410
+
+    ext = os.path.splitext(original)[1].lower()
+
+    with jobs_lock:
+        job['status']   = 'queued'
+        job['error']    = None
+        job['attempts'] += 1
+
+    executor.submit(process_job, job_id, original, ext)
+
+    return jsonify({
+        'job_id':  job_id,
+        'status':  'queued',
+        'attempt': job['attempts'],
+        'message': f'Retry attempt {job["attempts"]} of {RETRY_LIMIT} started.'
+    })
 
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    app.run(debug=True, port=5000, threaded=True)
