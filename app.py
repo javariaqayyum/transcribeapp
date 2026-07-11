@@ -487,6 +487,7 @@ h1 { font-size: 28px; font-weight: 700; color: var(--text); letter-spacing: -0.5
   const toastIcon      = document.getElementById('toast-icon');
   const toastTitle     = document.getElementById('toast-title');
   const toastDetail    = document.getElementById('toast-detail');
+  const toastRetry     = document.getElementById('toast-retry');
   const progressWrap   = document.getElementById('progress-wrap');
   const progressLabel  = document.getElementById('progress-label');
   const transcriptBox  = document.getElementById('transcript-box');
@@ -500,6 +501,8 @@ h1 { font-size: 28px; font-weight: 700; color: var(--text); letter-spacing: -0.5
   let selectedFile = null;
   let lastText     = '';
   let lastSegments = [];
+  let currentJobId = null;    // track current job for retry
+  let pollTimer    = null;    // polling interval reference
 
   function formatBytes(b) {
     if (b < 1024)    return b + ' B';
