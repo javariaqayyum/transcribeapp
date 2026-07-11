@@ -150,7 +150,7 @@ Retries a failed transcription using the original uploaded audio.
 # 📁 Project Structure
 
 ``` text
-wavecheck/
+transcribeapp
 ├── app.py
 ├── uploads/
 ├── jobs/
@@ -159,7 +159,3 @@ wavecheck/
 
 ------------------------------------------------------------------------
 
-# 👨‍💻 Author
-
-Developed as part of the WaveCheck Audio Transcriber project using
-Flask, OpenAI Whisper, and Python.
