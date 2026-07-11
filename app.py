@@ -330,6 +330,17 @@ h1 { font-size: 28px; font-weight: 700; color: var(--text); letter-spacing: -0.5
 .toast-title   { font-weight: 700; margin-bottom: 2px; }
 .toast-detail  { font-size: 12px; opacity: 0.8; font-family: var(--mono); }
 
+#toast-retry {
+  display: none; margin-top: 8px; padding: 5px 12px;
+  background: var(--red); color: white; border: none;
+  border-radius: 6px; font-size: 12px; font-weight: 600;
+  font-family: var(--sans); cursor: pointer;
+  transition: background 0.15s;
+}
+#toast-retry:hover { background: #D92C20; }
+#toast-retry.show  { display: inline-block; }
+
+
 #transcript-box {
   display: none; margin-top: 20px; padding: 16px; background: #F8F9FC;
   border: 1px solid var(--border); border-radius: 12px; animation: slideUp 0.3s ease;
