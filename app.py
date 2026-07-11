@@ -702,7 +702,7 @@ h1 { font-size: 28px; font-weight: 700; color: var(--text); letter-spacing: -0.5
     }
   });
    // Retry button handler
-   
+
    toastRetry.addEventListener('click', async () => {
     if (!currentJobId) return;
     toastRetry.className = '';
@@ -777,6 +777,35 @@ def upload():
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in SUPPORTED_FORMATS:
         return jsonify({'message': f'"{ext}" is not supported. Use WAV, MP3, M4A, OGG or FLAC.'}), 400
+    
+     #  Create persistent job folder (keeps original for retry)
+    job_id  = str(uuid.uuid4())
+    job_dir = os.path.join(UPLOAD_FOLDER, job_id)
+    os.makedirs(job_dir, exist_ok=True)
+
+    original_path = os.path.join(job_dir, "original" + ext)
+    file.save(original_path)
+
+    # Register job in thread-safe tracker
+    with jobs_lock:
+        jobs[job_id] = {
+            'status':       'queued',
+            'filename':     file.filename,
+            'created_at':   datetime.now().isoformat(),
+            'attempts':     1,
+            'result':       None,
+            'error':        None,
+            'completed_at': None
+        }
+
+    # Submit to background thread pool — Flask returns immediately
+    executor.submit(process_job, job_id, original_path, ext)
+
+    return jsonify({
+        'job_id':  job_id,
+        'status':  'queued',
+        'message': 'File accepted. Poll /status/<job_id> for progress.'
+    }), 202
 
     # ── CONCURRENT UPLOAD HANDLING ──
     # Each request gets its own isolated folder (UUID) so multiple
