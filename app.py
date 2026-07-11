@@ -599,6 +599,65 @@ h1 { font-size: 28px; font-weight: 700; color: var(--text); letter-spacing: -0.5
       `${words} words · ${lastSegments.length} segments · ${lang}${chunked ? ' · Long file chunked' : ''}`);
   }
 
+  
+  // Poll for job status until completed or failed
+  function pollStatus(jobId) {
+    let pollCount = 0;
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+
+    pollTimer = setInterval(async () => {
+      pollCount++;
+      try {
+        const res  = await fetch(`/status/${jobId}`);
+        const data = await res.json();
+
+        if (!res.ok && res.status !== 404) {
+          clearInterval(pollTimer); pollTimer = null;
+          progressWrap.classList.remove('show');
+          submitBtn.disabled = false;
+          submitBtn.textContent = '🎙 Transcribe File';
+          showToast('error', 'Status check failed', data.message || 'Unknown error', false);
+          return;
+        }
+
+        if (data.status === 'completed') {
+          clearInterval(pollTimer); pollTimer = null;
+          progressWrap.classList.remove('show');
+          submitBtn.disabled = false;
+          submitBtn.textContent = '🎙 Transcribe File';
+
+          // Fetch full result
+          const resultRes = await fetch(`/result/${jobId}`);
+          const resultData = await resultRes.json();
+          if (resultRes.ok) {
+            displayResult(resultData);
+          } else {
+            showToast('error', 'Failed to load result', resultData.message || 'Unknown', false);
+          }
+
+        } else if (data.status === 'failed') {
+          clearInterval(pollTimer); pollTimer = null;
+          progressWrap.classList.remove('show');
+          submitBtn.disabled = false;
+          submitBtn.textContent = '🎙 Transcribe File';
+          showToast('error', 'Transcription failed',
+            data.error || 'Unknown error', true);  // ← show retry button
+
+        } else {
+          // Still processing — keep animating progress
+          progressLabel.textContent = `Job ${jobId.slice(0,8)}… · ${steps[Math.min(stepIdx, steps.length-1)]} (waiting)`;
+        }
+      } catch (err) {
+        clearInterval(pollTimer); pollTimer = null;
+        progressWrap.classList.remove('show');
+        submitBtn.disabled = false;
+        submitBtn.textContent = '🎙 Transcribe File';
+        showToast('error', 'Connection lost', err.message, false);
+      }
+    }, 2000); // poll every 2 seconds
+  }
+
+
   submitBtn.addEventListener('click', async () => {
     if (!selectedFile) return;
     submitBtn.disabled = true;
