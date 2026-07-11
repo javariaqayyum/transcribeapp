@@ -679,40 +679,18 @@ h1 { font-size: 28px; font-weight: 700; color: var(--text); letter-spacing: -0.5
       const data = await res.json();
       clearInterval(stepTimer);
 
-      if (res.ok && data.transcript) {
-        lastText     = data.transcript;
-        lastSegments = data.segments || [];
-        const words  = data.transcript.trim().split(/\s+/).length;
-
-        transcriptMeta.innerHTML = `
-          <span class="meta-tag">🌐 ${(data.language || 'unknown').toUpperCase()}</span>
-          <span class="meta-tag">📝 ${words} words</span>
-          <span class="meta-tag">⏱ ${data.duration || '?'}s</span>
-          <span class="meta-tag">🔖 ${lastSegments.length} segments</span>
-          <span class="meta-tag">${data.chunked ? '🔀 Chunked' : '⚡ Direct'}</span>
-          <span class="meta-tag">🤖 Whisper AI</span>
-        `;
-        transcriptText.textContent = data.transcript.trim();
-
-        segmentsList.innerHTML = '';
-        lastSegments.forEach(seg => {
-          const row = document.createElement('div');
-          row.className = 'seg-row';
-          row.innerHTML = `
-            <div class="seg-time">
-              <span class="seg-start">▶ ${formatTime(seg.start)}</span>
-              <span class="seg-end">⏹ ${formatTime(seg.end)}</span>
-            </div>
-            <div class="seg-text">${seg.text}</div>
-          `;
-          segmentsList.appendChild(row);
-        });
-
-        transcriptBox.classList.add('show');
-        showToast('success', 'Transcription complete',
-          `${words} words · ${lastSegments.length} segments · ${(data.language||'').toUpperCase()}${data.chunked ? ' · Long file chunked' : ''}`);
+      if (res.status === 202 && data.job_id) {
+        // File accepted — switch to polling mode
+        currentJobId = data.job_id;
+        submitBtn.textContent = '⏳ Transcribing...';
+        progressLabel.textContent = 'Job queued — waiting for worker...';
+        pollStatus(data.job_id);  // 🔴 NEW — start polling
       } else {
-        showToast('error', 'Transcription failed', data.message || 'Unknown error');
+        // Immediate error (bad format, etc.)
+        progressWrap.classList.remove('show');
+        submitBtn.disabled = false;
+        submitBtn.textContent = '🎙 Transcribe File';
+        showToast('error', 'Upload failed', data.message || 'Unknown error', false);
       }
     } catch (err) {
       clearInterval(stepTimer);
@@ -723,7 +701,38 @@ h1 { font-size: 28px; font-weight: 700; color: var(--text); letter-spacing: -0.5
       submitBtn.textContent = '🎙 Transcribe File';
     }
   });
+   // Retry button handler
+   
+   toastRetry.addEventListener('click', async () => {
+    if (!currentJobId) return;
+    toastRetry.className = '';
+    progressWrap.classList.add('show');
+    submitBtn.disabled = true;
+    submitBtn.textContent = '⏳ Retrying...';
+    progressLabel.textContent = 'Retrying transcription...';
 
+    try {
+      const res  = await fetch(`/retry/${currentJobId}`, { method: 'POST' });
+      const data = await res.json();
+
+      if (res.ok) {
+        currentJobId = data.job_id;
+        pollStatus(data.job_id);
+      } else {
+        progressWrap.classList.remove('show');
+        submitBtn.disabled = false;
+        submitBtn.textContent = '🎙 Transcribe File';
+        showToast('error', 'Retry failed', data.message || 'Cannot retry', false);
+      }
+    } catch (err) {
+      progressWrap.classList.remove('show');
+      submitBtn.disabled = false;
+      submitBtn.textContent = '🎙 Transcribe File';
+      showToast('error', 'Retry request failed', err.message, false);
+    }
+  });
+
+  
   copyBtn.addEventListener('click', () => {
     navigator.clipboard.writeText(lastText);
     copyBtn.textContent = '✓ Copied!';
