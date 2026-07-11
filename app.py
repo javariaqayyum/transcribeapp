@@ -21,14 +21,20 @@ MAX_WORKERS   = 2
 RETRY_LIMIT   = 3          
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(JOBS_FOLDER, exist_ok=True)
 
 print("Loading Whisper model...")
 model = whisper.load_model("base")
 print("Whisper model ready.")
 
-# ─────────────────────────────────────────────
+
+executor  = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+jobs      = {}          # {job_id: {status, filename, result, error, attempts, ...}}
+jobs_lock = threading.Lock()
+
+
 # LONG FILE HANDLER — split → transcribe → merge
-# ─────────────────────────────────────────────
+
 def split_audio(audio, chunk_ms, overlap_ms):
     """Split audio into overlapping chunks. Returns list of (chunk, offset_sec)."""
     chunks = []
@@ -75,6 +81,100 @@ def transcribe_in_chunks(audio, tmp_dir):
         'segments': all_segments,
         'language': language
     }
+## Background Worker Function
+
+def process_job(job_id, original_path, ext):
+    """Transcribe in a background thread. Keeps original audio for retry."""
+    with jobs_lock:
+        jobs[job_id]['status'] = 'processing'
+
+    work_dir = os.path.join(UPLOAD_FOLDER, job_id, "work")
+    os.makedirs(work_dir, exist_ok=True)
+
+    try:
+        AudioSegment.converter = r"C:\ffmpeg\bin\ffmpeg.exe"
+        AudioSegment.ffprobe   = r"C:\ffmpeg\bin\ffprobe.exe"
+
+        audio = AudioSegment.from_file(original_path)
+        audio = audio.set_frame_rate(16000).set_channels(1)
+
+        wav_path = os.path.join(work_dir, "converted.wav")
+        audio.export(wav_path, format="wav")
+
+        duration_ms = len(audio)
+        chunked     = duration_ms > CHUNK_THRESHOLD_MS
+
+        if chunked:
+            print(f"[{job_id}] Long file ({duration_ms/60000:.1f} min) — chunking")
+            result   = transcribe_in_chunks(audio, work_dir)
+            segments = result['segments']
+            language = result['language']
+            text     = result['text']
+        else:
+            print(f"[{job_id}] Short file ({duration_ms/60000:.1f} min) — direct")
+            result   = model.transcribe(wav_path, verbose=False)
+            language = result.get('language', 'unknown')
+            text     = result['text']
+            segments = [
+                {
+                    'id':    i,
+                    'start': round(seg['start'], 2),
+                    'end':   round(seg['end'],   2),
+                    'text':  seg['text'].strip()
+                }
+                for i, seg in enumerate(result['segments'])
+            ]
+
+        duration    = round(duration_ms / 1000, 1)
+        result_data = {
+            'transcript': text,
+            'language':   language,
+            'duration':   duration,
+            'segments':   segments,
+            'chunked':    chunked
+        }
+
+        # Update in-memory store
+        with jobs_lock:
+            jobs[job_id]['status']       = 'completed'
+            jobs[job_id]['result']       = result_data
+            jobs[job_id]['completed_at'] = datetime.now().isoformat()
+
+        # Persist to disk — survives server restarts
+        persist_path = os.path.join(JOBS_FOLDER, f"{job_id}.json")
+        with open(persist_path, 'w', encoding='utf-8') as f:
+            json.dump({
+                'id':           job_id,
+                'filename':     jobs[job_id]['filename'],
+                'status':       'completed',
+                'result':       result_data,
+                'created_at':   jobs[job_id]['created_at'],
+                'completed_at': jobs[job_id]['completed_at'],
+                'attempts':     jobs[job_id]['attempts']
+            }, f, ensure_ascii=False)
+
+        print(f"[{job_id}]  Completed")
+
+    except Exception as e:
+        print(f"[{job_id}]  Failed: {e}")
+        with jobs_lock:
+            jobs[job_id]['status'] = 'failed'
+            jobs[job_id]['error']  = str(e)
+
+        persist_path = os.path.join(JOBS_FOLDER, f"{job_id}.json")
+        with open(persist_path, 'w', encoding='utf-8') as f:
+            json.dump({
+                'id':         job_id,
+                'filename':   jobs[job_id]['filename'],
+                'status':     'failed',
+                'error':      str(e),
+                'created_at': jobs[job_id]['created_at'],
+                'attempts':   jobs[job_id]['attempts']
+            }, f, ensure_ascii=False)
+
+    finally:
+        # Clean temp work files, but KEEP original audio for retry
+        shutil.rmtree(work_dir, ignore_errors=True)
 
 HTML = r"""
 <!DOCTYPE html>
