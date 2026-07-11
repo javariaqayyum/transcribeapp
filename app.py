@@ -1,6 +1,8 @@
 from flask import Flask, request, jsonify, render_template_string
-import os, uuid, shutil, whisper
+import os, uuid, shutil, whisper, json, threading 
 from pydub import AudioSegment
+from concurrent.futures import ThreadPoolExecutor             
+from datetime import datetime 
 
 os.environ["PATH"] += os.pathsep + r"C:\ffmpeg\bin"
 
@@ -12,6 +14,11 @@ UPLOAD_FOLDER        = os.path.join(os.getcwd(), "uploads")
 CHUNK_THRESHOLD_MS   = 10 * 60 * 1000   # files > 10 min get chunked
 CHUNK_SIZE_MS        = 5  * 60 * 1000   # 5-minute chunks
 OVERLAP_MS           = 3000             # 3-sec overlap to avoid cutting sentences
+
+
+JOBS_FOLDER   = os.path.join(os.getcwd(), "jobs")
+MAX_WORKERS   = 2          
+RETRY_LIMIT   = 3          
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
