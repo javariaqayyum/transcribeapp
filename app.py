@@ -446,6 +446,7 @@ h1 { font-size: 28px; font-weight: 700; color: var(--text); letter-spacing: -0.5
     <div class="toast-body">
       <div class="toast-title" id="toast-title"></div>
       <div class="toast-detail" id="toast-detail"></div>
+      <button id="toast-retry">🔄 Retry Transcription</button>
     </div>
   </div>
 
